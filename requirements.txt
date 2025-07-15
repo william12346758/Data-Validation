@@ -1,6 +1,12 @@
-streamlit
-pandas
-numpy
-openpyxl
-ruptures
-matplotlib
+# ── Core numerical & data stack ──────────────────────────
+numpy>=1.24,<2.0
+pandas>=2.2,<3.0
+
+# ── Visualisation ────────────────────────────────────────
+matplotlib>=3.8,<4.0
+
+# ── Web‑app framework ────────────────────────────────────
+streamlit>=1.35,<2.0
+
+# ── Excel loader used by pandas(engine="openpyxl") ───────
+openpyxl>=3.1,<4.0
