@@ -1,8 +1,9 @@
 """
-Created on Tue Jul 15 11:40:19 2025
+First created on Tue Jul 15 2025
+Latest revision Wed Jul 30 2025
 
 @author: LWu
-The script is written by Le Wu with assistance of GPT-O3
+The script is written by Le Wu with assistance of GPT models
 
 To run this file:
     Requirements: Python ≥3.9 · pandas ≥2.2 · streamlit ≥1.35
@@ -30,6 +31,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+from st_aggrid import AgGrid, GridOptionsBuilder
 
 # ── UI CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Time‑Series Validator", layout="wide")
@@ -282,7 +284,7 @@ def main() -> None:
     # ────────────────────────────────────────────────────────────────────
     if view == "Preview":
         st.dataframe(clean.head())
-
+    
     # ── GAP ANALYSIS ────────────────────────────────────────────────────
     elif view == "Gap analysis":
         st.subheader("Gap Analysis")
@@ -291,7 +293,8 @@ def main() -> None:
 
         chosen = st.multiselect("Series to scan", series_cols, default=series_cols)
         if not chosen:
-            st.info("Select at least one series."); return
+            st.info("Select at least one series.")
+            return
 
         def fmt(p: pd.Period) -> str:
             if p.freqstr == "Y":
@@ -304,20 +307,60 @@ def main() -> None:
 
         rows = []
         for name, grp in iter_groups(clean):
-            grp_id = ", ".join(f"{c}={v}" for c, v in zip(group_cols, name)) \
-                     if name else "All data"
+            grp_id = "; ".join(f"{c}={v}" for c, v in zip(group_cols, name)) if name else "All data"
             per = grp["date"].dt.to_period(pcode)
             start_p, end_p = per.min(), fixed_end
             full_idx = pd.period_range(start_p, end_p, freq=pcode)
-            missing  = full_idx.difference(per)
+            missing = full_idx.difference(per)
+
             for col in chosen:
                 rows.append({
-                    "Series":    grp_id,
-                    "Indicator": col,
-                    "Range":     f"{fmt(start_p)}–{fmt(end_p)}",
-                    "Missing":   [fmt(p) for p in missing],
+                "Series":    grp_id,
+                "Indicator": col,
+                "Range":     f"{fmt(start_p)}-{fmt(end_p)}",
+                "Missing":   [fmt(p) for p in missing],
                 })
-        st.dataframe(pd.DataFrame(rows))
+
+        df = pd.DataFrame(rows)
+
+        gb = GridOptionsBuilder.from_dataframe(df)
+        gb.configure_default_column(
+            wrapText=True,
+            autoHeight=False,
+            cellStyle={"overflow": "auto", "maxHeight": "100px"},
+            )
+        grid_options = gb.build()
+
+        AgGrid(
+            df,
+            gridOptions=grid_options,
+            enable_enterprise_modules=False,
+            fit_columns_on_grid_load=False,
+            theme="light",
+            )
+        
+        df_dl = df.copy()
+        # Split the comma‑separated “Series” into separate columns
+        split_cols = df_dl["Series"] \
+            .str.split(r";\s*", expand=True)
+        split_cols.columns = [f"grouper_{i+1}" for i in range(split_cols.shape[1])]
+
+        # Drop original and re‑concat so groupers come first
+        df_dl = pd.concat([split_cols, df_dl.drop(columns=["Series"])], axis=1)
+
+        # Collapse Missing list → single string
+        df_dl["Missing"] = df_dl["Missing"].apply(lambda lst: ", ".join(lst))
+
+        # 3) Download button
+        csv = df_dl.to_csv(index=False, encoding="utf-8-sig")
+        st.download_button(
+            label="⬇️ Download Gap Analysis CSV",
+            data=csv,
+            file_name="gap_analysis.csv",
+            mime="text/csv",
+            )
+
+   
 
     # ── OUTLIER SCAN ────────────────────────────────────────────────────
     elif view == "Outlier scan":
@@ -374,49 +417,109 @@ def main() -> None:
     # ── STRUCTURAL BREAK (2nd diff) ─────────────────────────────────────
     elif view == "Structural break":
         st.subheader("Structural break – 2nd difference")
-        var   = st.selectbox("Series", series_cols)
-        std   = float(clean[var].std(ddof=0) or 0)
-        thresh = st.slider("Δ² threshold", 0.0, max(std*2, 1.0), std if std>0 else 0.1)
 
-        kinks = []
-        for name, grp in iter_groups(clean):
-            label = ", ".join(f"{c}={v}" for c, v in zip(group_cols, name)) \
-                    if name else "All data"
-            s     = grp.sort_values("date")[var].astype(float)
-            d2    = s.diff().diff().abs()
-            for idx in d2.index[d2 > thresh]:
-                kinks.append({
-                    "group":  name,
-                    "Series": label,
-                    "Variable": var,
-                    "Date":   grp.loc[idx, "date"],
-                    "Δ²":     float(d2.loc[idx]),
-                })
+        # 1) Pick the series
+        var = st.selectbox("Select variable for structural‑break analysis", series_cols)
 
-        if not kinks:
-            st.info("No kinks above threshold."); return
+        # 2) Compute |Δ²| for every group
+        all_d2 = pd.concat(
+        grp.sort_values("date")[var].astype(float).diff().diff().abs().dropna()
+        for _, grp in iter_groups(clean)
+        )
+        if all_d2.empty:
+            st.warning("Not enough data to compute 2nd differences.")
+            return
 
-        df_k = pd.DataFrame(kinks)
-        st.dataframe(df_k)
-        lbl = {i: f"{i}: {r['Series']} | {var} @ {r['Date'].date()} (Δ²={r['Δ²']:.2f})"
-               for i, r in df_k.iterrows()}
-        sel_idx = st.selectbox("Plot which one?", list(lbl), format_func=lbl.get)
-        row     = df_k.loc[sel_idx]
+        # 3) Show histogram of |Δ²|
+        st.markdown("**Distribution of |Δ²|** (absolute 2nd differences)")
+        fig, ax = plt.subplots()
+        ax.hist(all_d2, bins=30)
+        ax.set_xlabel("|Δ²|"); ax.set_ylabel("Frequency")
+        st.pyplot(fig)
 
-        if group_cols[0] is None:
-            df_p = clean.copy()
+        # 4) Threshold method chooser
+        st.markdown("**Choose a threshold method for flagging structural breaks:**")
+        method = st.radio("", ["Absolute", "Std dev above mean", "Quantile"], horizontal=True)
+
+        mean2 = all_d2.mean()
+        std2  = all_d2.std()
+        max2  = all_d2.max()
+
+        if method == "Absolute":
+            st.markdown("> Flag any |Δ²| above a fixed value")
+            thresh = st.slider(
+                "Absolute |Δ²| threshold",
+                min_value=0.0,
+                max_value=float(max2),
+                value=float(mean2),
+                step=(max2 / 100),
+                )
+
+        elif method == "Std dev above mean":
+            st.markdown(
+                f"> Flag any |Δ²| above mean ({mean2:.3f}) + k × σ ({std2:.3f})"
+                )
+            k = st.slider("k (number of σ)", 0.0, 5.0, 1.0, 0.1)
+            thresh = mean2 + k * std2
+            st.markdown(f"**Threshold =** {mean2:.3f} + {k:.1f}×{std2:.3f} = **{thresh:.3f}**")
+
         else:
-            mask = (clean[group_cols] == pd.Series(row["group"]).values).all(axis=1)
-            df_p = clean[mask]
+            st.markdown("> Flag the top p‑percentile of |Δ²|")
+            p = st.slider("Percentile p", 50, 100, 95, 1)
+            thresh = float(all_d2.quantile(p / 100))
+            st.markdown(f"**Threshold =** {p}th percentile of |Δ²| = **{thresh:.3f}**")
 
-        df_p   = df_p.sort_values("date")
-        smooth = df_p[var].rolling(5, min_periods=1, center=True).mean()
+        # 5) Detect and collect breaks
+        breaks = []
+        for name, grp in iter_groups(clean):
+            label = (
+                ", ".join(f"{c}={v}" for c, v in zip(group_cols, name))
+                if name else "All data"
+                )
+            s   = grp.sort_values("date")[var].astype(float)
+            d2  = s.diff().diff().abs()
+            for idx in d2.index[d2 > thresh]:
+                breaks.append({
+                    "group":    name,
+                    "Series":   label,
+                    "Variable": var,
+                    "Date":     grp.loc[idx, "date"],
+                    "|Δ²|":     float(d2.loc[idx]),
+                    })
+
+        if not breaks:
+            st.info("No structural breaks found above threshold.")
+            return
+
+        # 6) Show table of detected breaks
+        df_b = pd.DataFrame(breaks)
+        st.markdown("**Detected structural breaks**")
+        st.dataframe(df_b, use_container_width=True)
+
+        # 7) Let user pick one break to plot
+        options = {
+            i: f"{i}: {r['Series']} @ {r['Date'].date()} (|Δ²|={r['|Δ²|']:.2f})"
+            for i, r in df_b.iterrows()
+        }
+        sel = st.selectbox("Plot which break?", list(options), format_func=options.get)
+
+        # 8) Plot time‑series with break highlighted
+        chosen = df_b.loc[sel]
+        mask = (
+            (clean[list(group_cols)] == pd.Series(chosen["group"]).values)
+            .all(axis=1)
+            if group_cols[0] is not None
+            else slice(None)
+            )
+        df_p = clean[mask].sort_values("date")
+        d2   = df_p[var].diff().diff().abs()
 
         fig, ax = plt.subplots()
-        ax.scatter(df_p["date"], df_p[var], s=20)
-        ax.plot(df_p["date"], smooth, linewidth=2)
-        ax.axvline(row["Date"], linestyle="--", c="red")
-        ax.set_title(lbl[sel_idx]); ax.set_xlabel("Date"); ax.set_ylabel(var)
+        ax.plot(df_p["date"], df_p[var], label=var, marker="o", markersize=4)
+        ax.axvline(chosen["Date"], color="red", linestyle="--", label="Break date")
+        ax.set_title(options[sel])
+        ax.set_xlabel("Date"); ax.set_ylabel(var)
+        ax.legend()
         st.pyplot(fig)
 
     # ── CUSTOM RULES ────────────────────────────────────────────────────
