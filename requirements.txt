@@ -7,7 +7,7 @@ matplotlib>=3.8,<4.0
 
 # ── Web‑app framework ────────────────────────────────────
 streamlit>=1.35,<2.0
-streanlit-aggrid
+streamlit-aggrid
 
 # ── Excel loader used by pandas(engine="openpyxl") ───────
 openpyxl>=3.1,<4.0
