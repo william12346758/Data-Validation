@@ -1,6 +1,7 @@
 # ── Core numerical & data stack ──────────────────────────
 numpy>=1.24,<2.0
 pandas>=2.2,<3.0
+statsmodels>=0.14,<1.0
 
 # ── Visualisation ────────────────────────────────────────
 matplotlib>=3.8,<4.0

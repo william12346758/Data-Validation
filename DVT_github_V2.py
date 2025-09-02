@@ -9,10 +9,9 @@ To run this file:
     Requirements: Python ≥3.9 · pandas ≥2.2 · streamlit ≥1.35
     1. pip install all packages below
     2. Put the script in your Python work directory or desired folder
-    3. Type the following line in (conda) command prompt: 
+    3. Type the following line in (conda) command prompt:
         streamlit run DVT_V2.py
-    
-    
+
 Main features of this tool:
     • Indicator header/synonym detection
     • Automatic wide‑to‑long converter for year columns
@@ -32,6 +31,7 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 from st_aggrid import AgGrid, GridOptionsBuilder
+from statsmodels.tsa.seasonal import seasonal_decompose
 
 # ── UI CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Time‑Series Validator", layout="wide")
@@ -284,7 +284,7 @@ def main() -> None:
     # ────────────────────────────────────────────────────────────────────
     if view == "Preview":
         st.dataframe(clean.head())
-    
+
     # ── GAP ANALYSIS ────────────────────────────────────────────────────
     elif view == "Gap analysis":
         st.subheader("Gap Analysis")
@@ -338,7 +338,7 @@ def main() -> None:
             fit_columns_on_grid_load=False,
             theme="light",
             )
-        
+
         df_dl = df.copy()
         # Split the comma‑separated “Series” into separate columns
         split_cols = df_dl["Series"] \
@@ -360,31 +360,42 @@ def main() -> None:
             mime="text/csv",
             )
 
-   
-
     # ── OUTLIER SCAN ────────────────────────────────────────────────────
     elif view == "Outlier scan":
-        st.subheader("Outlier Scan (z‑score)")
-        threshold = st.slider("Z‑score threshold", 1.0, 5.0, 3.0)
+        st.subheader("Outlier Scan")
+        method    = st.radio("Method", ["Z-score", "Trend/seasonality adjusted"], horizontal=True)
+        threshold = st.slider("Z-score threshold", 1.0, 5.0, 3.0)
         var       = st.selectbox("Series", series_cols)
+        if method == "Trend/seasonality adjusted":
+            period = st.number_input("Seasonal period", min_value=2, value=12, step=1)
 
         outliers = []
         for name, grp in iter_groups(clean):
-            label = ", ".join(f"{c}={v}" for c, v in zip(group_cols, name)) \
-                    if name else "All data"
-            vals = grp[var].dropna()
-            if vals.empty:
+            label = ", ".join(f"{c}={v}" for c, v in zip(group_cols, name)) if name else "All data"
+            grp_sorted = grp.sort_values("date")
+            series = grp_sorted[var].dropna().astype(float)
+            if series.empty:
                 continue
-            mean, std = vals.mean(), vals.std(ddof=0) or 1
-            z = (grp[var] - mean) / std
-            for idx in grp.index[(z.abs() > threshold)]:
+            if method == "Z-score":
+                mean, std = series.mean(), series.std(ddof=0) or 1
+                z = (series - mean) / std
+            else:
+                if len(series) < int(period) * 2:
+                    continue
+                interp = series.interpolate().ffill().bfill()
+                dec = seasonal_decompose(interp, period=int(period), model="additive", two_sided=False, extrapolate_trend="freq")
+                resid = series - (dec.trend + dec.seasonal)
+                resid = resid.dropna()
+                std = resid.std(ddof=0) or 1
+                z = resid / std
+            for idx in z.index[z.abs() > threshold]:
                 outliers.append({
                     "group":   name,
                     "Series":  label,
                     "Variable": var,
-                    "Date":    grp.at[idx, "date"],
-                    "Value":   grp.at[idx, var],
-                    "Z":       float(z.at[idx]),
+                    "Date":    grp_sorted.at[idx, "date"],
+                    "Value":   grp_sorted.at[idx, var],
+                    "Z":       float(z.loc[idx]),
                 })
 
         if not outliers:
@@ -392,8 +403,7 @@ def main() -> None:
 
         df_o = pd.DataFrame(outliers)
         st.dataframe(df_o)
-        lbl = {i: f"{i}: {r['Series']} | {var} @ {r['Date'].date()}"
-               for i, r in df_o.iterrows()}
+        lbl = {i: f"{i}: {r['Series']} | {var} @ {r['Date'].date()}" for i, r in df_o.iterrows()}
         sel_idx = st.selectbox("Plot which one?", list(lbl), format_func=lbl.get)
         sel     = df_o.loc[sel_idx]
 
@@ -409,8 +419,7 @@ def main() -> None:
         fig, ax = plt.subplots()
         ax.scatter(df_plot["date"], df_plot[var], s=20, alpha=0.6)
         ax.plot(df_plot["date"], smooth, linewidth=2)
-        ax.scatter(sel["Date"], sel["Value"], s=120, c="red",
-                   edgecolors="black", zorder=3)
+        ax.scatter(sel["Date"], sel["Value"], s=120, c="red", edgecolors="black", zorder=3)
         ax.set_title(lbl[sel_idx]); ax.set_xlabel("Date"); ax.set_ylabel(var)
         st.pyplot(fig)
 
@@ -426,6 +435,7 @@ def main() -> None:
         grp.sort_values("date")[var].astype(float).diff().diff().abs().dropna()
         for _, grp in iter_groups(clean)
         )
+
         if all_d2.empty:
             st.warning("Not enough data to compute 2nd differences.")
             return
@@ -534,7 +544,11 @@ def main() -> None:
             st.markdown("#### Existing rules")
             for i, r in enumerate(st.session_state.rules):
                 scope = f" ({r['start']}→{r['end']})" if r.get("start") else ""
-                st.write(f"**{i}**: {r['col']} {r['op']} {r['val']}{scope}")
+                if r["type"] == "value":
+                    desc = f"{r['col']} {r['op']} {r['val']}"
+                else:
+                    desc = f"{r['col']} {r['op']} {r['other']}"
+                st.write(f"**{i}**: {desc}{scope}")
             remove = st.multiselect("Remove rules", list(range(len(st.session_state.rules))))
             if st.button("Delete selected") and remove:
                 for i in sorted(remove, reverse=True):
@@ -544,54 +558,95 @@ def main() -> None:
             st.info("No rules yet.")
 
         with st.form("add_rule"):
-            new_col = st.selectbox("Column", num_cols)
-            new_op  = st.selectbox("Operator", ["<=", ">=", "<", ">", "==", "!="])
-            new_val = st.number_input("Value", value=0.0)
+            rtype = st.radio("Rule type", ["Value vs constant", "Series comparison"])
+            if rtype == "Value vs constant":
+                new_col = st.selectbox("Column", num_cols, key="val_col")
+                new_op  = st.selectbox("Operator", ["<=", ">=", "<", ">", "==", "!="], key="val_op")
+                new_val = st.number_input("Value", value=0.0, key="val_val")
+            else:
+                left = st.selectbox("Left series", num_cols, key="left_series")
+                new_op = st.selectbox("Operator", ["<=", ">=", "<", ">", "==", "!="], key="series_op")
+                right = st.selectbox("Right series", num_cols, key="right_series")
             scoped  = st.checkbox("Restrict to date range?")
             start = end = None
             if scoped:
                 start = st.date_input("Start", value=clean["date"].min().date())
-                end   = st.date_input("End",   value=clean["date"].max().date(),
-                                      min_value=start)
+                end   = st.date_input("End", value=clean["date"].max().date(), min_value=start)
             if st.form_submit_button("Add"):
-                st.session_state.rules.append({
-                    "col": new_col, "op": new_op, "val": new_val,
-                    "start": start, "end": end,
-                })
+                if rtype == "Value vs constant":
+                    st.session_state.rules.append({"type":"value","col":new_col,"op":new_op,"val":new_val,"start":start,"end":end})
+                else:
+                    st.session_state.rules.append({"type":"series","col":left,"op":new_op,"other":right,"start":start,"end":end})
                 st.success("Rule added.")
 
-        # evaluate
         if st.session_state.rules:
             viol_list = []
             for idx, r in enumerate(st.session_state.rules):
                 df_sub = clean.copy()
                 if r["start"]:
-                    mask = (df_sub["date"] >= pd.to_datetime(r["start"])) & \
-                           (df_sub["date"] <= pd.to_datetime(r["end"]))
+                    mask = (df_sub["date"] >= pd.to_datetime(r["start"])) & (df_sub["date"] <= pd.to_datetime(r["end"]))
                     df_sub = df_sub[mask]
-                expr = {
-                    "<=": df_sub[r["col"]] <= r["val"],
-                    ">=": df_sub[r["col"]] >= r["val"],
-                    "<":  df_sub[r["col"]] <  r["val"],
-                    ">":  df_sub[r["col"]] >  r["val"],
-                    "==": df_sub[r["col"]] == r["val"],
-                    "!=": df_sub[r["col"]] != r["val"],
-                }[r["op"]]
+                if r["type"] == "value":
+                    expr = {
+                        "<=": df_sub[r["col"]] <= r["val"],
+                        ">=": df_sub[r["col"]] >= r["val"],
+                        "<":  df_sub[r["col"]] <  r["val"],
+                        ">":  df_sub[r["col"]] >  r["val"],
+                        "==": df_sub[r["col"]] == r["val"],
+                        "!=": df_sub[r["col"]] != r["val"],
+                    }[r["op"]]
+                    rule_label = f"{r['col']} {r['op']} {r['val']}"
+                else:
+                    expr = {
+                        "<=": df_sub[r["col"]] <= df_sub[r["other"]],
+                        ">=": df_sub[r["col"]] >= df_sub[r["other"]],
+                        "<":  df_sub[r["col"]] <  df_sub[r["other"]],
+                        ">":  df_sub[r["col"]] >  df_sub[r["other"]],
+                        "==": df_sub[r["col"]] == df_sub[r["other"]],
+                        "!=": df_sub[r["col"]] != df_sub[r["other"]],
+                    }[r["op"]]
+                    rule_label = f"{r['col']} {r['op']} {r['other']}"
                 bad = df_sub[~expr]
                 if not bad.empty:
-                    bad = bad.assign(rule_id=idx,
-                                     rule=f"{r['col']} {r['op']} {r['val']}")
+                    bad = bad.assign(rule_id=idx, rule=rule_label)
                     viol_list.append(bad)
             if viol_list:
+                df_v = pd.concat(viol_list, ignore_index=True)
                 st.markdown("#### Violations")
-                st.dataframe(pd.concat(viol_list, ignore_index=True))
+                st.dataframe(df_v)
+                counts = df_v['rule_id'].value_counts()
+                fig, ax = plt.subplots()
+                counts.plot(kind='bar', ax=ax)
+                ax.set_xlabel('Rule ID'); ax.set_ylabel('Violations')
+                st.pyplot(fig)
+                def fmt_rule(i):
+                    r = st.session_state.rules[int(i)]
+                    return f"{r['col']} {r['op']} {r.get('val', r.get('other'))}"
+                sel_rule = st.selectbox("Visualize rule", counts.index, format_func=fmt_rule)
+                r = st.session_state.rules[int(sel_rule)]
+                df_vis = clean.copy()
+                if r["start"]:
+                    mask = (df_vis["date"] >= pd.to_datetime(r["start"])) & (df_vis["date"] <= pd.to_datetime(r["end"]))
+                    df_vis = df_vis[mask]
+                fig, ax = plt.subplots()
+                if r["type"] == "value":
+                    ax.plot(df_vis["date"], df_vis[r["col"]], label=r["col"])
+                    ax.axhline(r["val"], color='red', linestyle='--', label=f"{r['op']} {r['val']}")
+                    bad_dates = df_v[df_v['rule_id']==sel_rule]['date']
+                    ax.scatter(bad_dates, df_vis.set_index('date').loc[bad_dates, r["col"]], color='red', label='Violation')
+                else:
+                    ax.plot(df_vis["date"], df_vis[r["col"]], label=r["col"])
+                    ax.plot(df_vis["date"], df_vis[r["other"]], label=r["other"])
+                    bad_dates = df_v[df_v['rule_id']==sel_rule]['date']
+                    ax.scatter(bad_dates, df_vis.set_index('date').loc[bad_dates, r["col"]], color='red', label='Violation')
+                ax.set_xlabel('Date'); ax.legend(); st.pyplot(fig)
             else:
                 st.success("✅ All data satisfy the rules.")
-
-    # ── DOWNLOAD ────────────────────────────────────────────────────────
+# ── DOWNLOAD ────────────────────────────────────────────────────────
     csv = clean.to_csv(index=False).encode()
     st.sidebar.download_button("Download cleaned CSV", csv,
                                "cleaned.csv", "text/csv")
 
 if __name__ == "__main__":
     main()
+
