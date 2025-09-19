@@ -12,3 +12,6 @@ streamlit-aggrid
 
 # ── Excel loader used by pandas(engine="openpyxl") ───────
 openpyxl>=3.1,<4.0
+
+# ── Time-series decomposition ─────────────────────────────
+statsmodels>=0.14,<1.0
