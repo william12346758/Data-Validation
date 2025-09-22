@@ -1,9 +1,9 @@
 """
 First created on Tue Jul 15 2025
-Latest revision Fri Sep 19 2025
+Latest revision Mon Sep 22 2025
 
 @author: LWu
-The script is written by Le Wu with assistance of OpenAI models
+The script is written by Le Wu with assistance of GPT models
 
 To run this file:
     Requirements: Python ≥3.9 · pandas ≥2.2 · streamlit ≥1.35
@@ -33,6 +33,18 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from st_aggrid import AgGrid, GridOptionsBuilder
 from statsmodels.tsa.seasonal import STL
+
+def trigger_rerun() -> None:
+    """Trigger a Streamlit rerun across both legacy and modern APIs."""
+    rerun_fn = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
+    if rerun_fn is None:
+        raise RuntimeError("Streamlit rerun API unavailable")
+    rerun_fn()
+
+
+# Backwards-compatibility alias retained for existing imports or indirect calls.
+rerun_app = trigger_rerun
+
 
 # ── UI CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Time‑Series Validator", layout="wide")
@@ -484,108 +496,120 @@ def main() -> None:
         ax.scatter(sel["Date"], sel["Value"], s=120, c="red", edgecolors="black", zorder=3)
         ax.set_title(lbl[sel_idx]); ax.set_xlabel("Date"); ax.set_ylabel(var)
         st.pyplot(fig)
+        
+        st.markdown("**Selected series data**")
+        display_cols = [c for c in (*active_group_cols, "date", var) if c in df_plot.columns]
+        display_df = df_plot[display_cols].copy()
+        display_df.rename(columns={var: f"{var} (value)"}, inplace=True)
+        if "date" in display_df.columns:
+            plot_dates = pd.to_datetime(df_plot["date"])
+            display_df["date"] = plot_dates.dt.date
+        else:
+            plot_dates = pd.to_datetime(df_plot.index)
+        display_df["Flag"] = np.where(plot_dates.dt.normalize() == pd.to_datetime(sel["Date"]).normalize(), "⬤ Outlier", "")
+        st.dataframe(display_df, use_container_width=True)
 
     # ── STRUCTURAL BREAK (2nd diff) ─────────────────────────────────────
     elif view == "Structural break":
-        st.subheader("Structural break – 2nd difference")
+       st.subheader("Structural break – 2nd difference")
 
-        # 1) Pick the series
-        var = st.selectbox("Select variable for structural‑break analysis", series_cols)
+       # 1) Pick the series
+       var = st.selectbox("Select variable for structural‑break analysis", series_cols)
 
-        # 2) Compute |Δ²| for every group
-        all_d2 = pd.concat(
-        grp.sort_values("date")[var].astype(float).diff().diff().abs().dropna()
-        for _, grp in iter_groups(clean)
-        )
-        if all_d2.empty:
-            st.warning("Not enough data to compute 2nd differences.")
-            return
+       # 2) Compute |Δ²| for every group
+       all_d2 = pd.concat(
+       grp.sort_values("date")[var].astype(float).diff().diff().abs().dropna()
+       for _, grp in iter_groups(clean)
+       )
+       if all_d2.empty:
+           st.warning("Not enough data to compute 2nd differences.")
+           return
 
-        # 3) Show histogram of |Δ²|
-        st.markdown("**Distribution of |Δ²|** (absolute 2nd differences)")
-        fig, ax = plt.subplots()
-        ax.hist(all_d2, bins=30)
-        ax.set_xlabel("|Δ²|"); ax.set_ylabel("Frequency")
-        st.pyplot(fig)
+       # 3) Show histogram of |Δ²|
+       st.markdown("**Distribution of |Δ²|** (absolute 2nd differences)")
+       fig, ax = plt.subplots()
+       ax.hist(all_d2, bins=30)
+       ax.set_xlabel("|Δ²|"); ax.set_ylabel("Frequency")
+       st.pyplot(fig)
 
-        # 4) Threshold method chooser
-        st.markdown("**Choose a threshold method for flagging structural breaks:**")
-        method = st.radio("", ["Absolute", "Std dev above mean", "Quantile"], horizontal=True)
+       # 4) Threshold method chooser
+       st.markdown("**Choose a threshold method for flagging structural breaks:**")
+       method = st.radio("", ["Absolute", "Std dev above mean", "Quantile"], horizontal=True)
 
-        mean2 = all_d2.mean()
-        std2  = all_d2.std()
-        max2  = all_d2.max()
+       mean2 = all_d2.mean()
+       std2  = all_d2.std()
+       max2  = all_d2.max()
 
-        if method == "Absolute":
-            st.markdown("> Flag any |Δ²| above a fixed value")
-            thresh = st.slider(
-                "Absolute |Δ²| threshold",
-                min_value=0.0,
-                max_value=float(max2),
-                value=float(mean2),
-                step=(max2 / 100),
-                )
+       if method == "Absolute":
+           st.markdown("> Flag any |Δ²| above a fixed value")
+           thresh = st.slider(
+               "Absolute |Δ²| threshold",
+               min_value=0.0,
+               max_value=float(max2),
+               value=float(mean2),
+               step=(max2 / 100),
+               )
 
-        elif method == "Std dev above mean":
-            st.markdown(
-                f"> Flag any |Δ²| above mean ({mean2:.3f}) + k × σ ({std2:.3f})"
-                )
-            k = st.slider("k (number of σ)", 0.0, 5.0, 1.0, 0.1)
-            thresh = mean2 + k * std2
-            st.markdown(f"**Threshold =** {mean2:.3f} + {k:.1f}×{std2:.3f} = **{thresh:.3f}**")
+       elif method == "Std dev above mean":
+           st.markdown(
+               f"> Flag any |Δ²| above mean ({mean2:.3f}) + k × σ ({std2:.3f})"
+               )
+           k = st.slider("k (number of σ)", 0.0, 5.0, 1.0, 0.1)
+           thresh = mean2 + k * std2
+           st.markdown(f"**Threshold =** {mean2:.3f} + {k:.1f}×{std2:.3f} = **{thresh:.3f}**")
 
-        else:
-            st.markdown("> Flag the top p‑percentile of |Δ²|")
-            p = st.slider("Percentile p", 50, 100, 95, 1)
-            thresh = float(all_d2.quantile(p / 100))
-            st.markdown(f"**Threshold =** {p}th percentile of |Δ²| = **{thresh:.3f}**")
+       else:
+           st.markdown("> Flag the top p‑percentile of |Δ²|")
+           p = st.slider("Percentile p", 50, 100, 95, 1)
+           thresh = float(all_d2.quantile(p / 100))
+           st.markdown(f"**Threshold =** {p}th percentile of |Δ²| = **{thresh:.3f}**")
 
-        # 5) Detect and collect breaks
-        breaks = []
-        for name, grp in iter_groups(clean):
-            label = format_group_label(name)
-            s   = grp.sort_values("date")[var].astype(float)
-            d2  = s.diff().diff().abs()
-            for idx in d2.index[d2 > thresh]:
-                breaks.append({
-                    "group":    name,
-                    "Series":   label,
-                    "Variable": var,
-                    "Date":     grp.loc[idx, "date"],
-                    "|Δ²|":     float(d2.loc[idx]),
-                    })
+       # 5) Detect and collect breaks
+       breaks = []
+       for name, grp in iter_groups(clean):
+           label = format_group_label(name)
+           s   = grp.sort_values("date")[var].astype(float)
+           d2  = s.diff().diff().abs()
+           for idx in d2.index[d2 > thresh]:
+               breaks.append({
+                   "group":    name,
+                   "Series":   label,
+                   "Variable": var,
+                   "Date":     grp.loc[idx, "date"],
+                   "|Δ²|":     float(d2.loc[idx]),
+                   })
 
-        if not breaks:
-            st.info("No structural breaks found above threshold.")
-            return
+       if not breaks:
+           st.info("No structural breaks found above threshold.")
+           return
 
-        # 6) Show table of detected breaks
-        df_b = pd.DataFrame(breaks)
-        st.markdown("**Detected structural breaks**")
-        st.dataframe(df_b, use_container_width=True)
+       # 6) Show table of detected breaks
+       df_b = pd.DataFrame(breaks)
+       st.markdown("**Detected structural breaks**")
+       st.dataframe(df_b, use_container_width=True)
 
-        # 7) Let user pick one break to plot
-        options = {
-            i: f"{i}: {r['Series']} @ {r['Date'].date()} (|Δ²|={r['|Δ²|']:.2f})"
-            for i, r in df_b.iterrows()
-        }
-        sel = st.selectbox("Plot which break?", list(options), format_func=options.get)
+       # 7) Let user pick one break to plot
+       options = {
+           i: f"{i}: {r['Series']} @ {r['Date'].date()} (|Δ²|={r['|Δ²|']:.2f})"
+           for i, r in df_b.iterrows()
+       }
+       sel = st.selectbox("Plot which break?", list(options), format_func=options.get)
 
-        # 8) Plot time‑series with break highlighted
-        chosen = df_b.loc[sel]
-        if not active_group_cols:
-           df_p = clean.sort_values("date")
-        else:
-           df_p = filter_by_group(clean, chosen["group"]).sort_values("date")
-        d2   = df_p[var].diff().diff().abs()
+       # 8) Plot time‑series with break highlighted
+       chosen = df_b.loc[sel]
+       if not active_group_cols:
+          df_p = clean.sort_values("date")
+       else:
+          df_p = filter_by_group(clean, chosen["group"]).sort_values("date")
+       d2   = df_p[var].diff().diff().abs()
 
-        fig, ax = plt.subplots()
-        ax.plot(df_p["date"], df_p[var], label=var, marker="o", markersize=4)
-        ax.axvline(chosen["Date"], color="red", linestyle="--", label="Break date")
-        ax.set_title(options[sel])
-        ax.set_xlabel("Date"); ax.set_ylabel(var)
-        ax.legend()
-        st.pyplot(fig)
+       fig, ax = plt.subplots()
+       ax.plot(df_p["date"], df_p[var], label=var, marker="o", markersize=4)
+       ax.axvline(chosen["Date"], color="red", linestyle="--", label="Break date")
+       ax.set_title(options[sel])
+       ax.set_xlabel("Date"); ax.set_ylabel(var)
+       ax.legend()
+       st.pyplot(fig)
 
     # ── CUSTOM RULES ────────────────────────────────────────────────────
     else:
@@ -594,6 +618,10 @@ def main() -> None:
 
         if "rules" not in st.session_state:
             st.session_state.rules = []
+
+        if not num_cols:
+            st.warning("No numeric series available for rules.")
+            return
 
         for r in st.session_state.rules:
             if r["type"] == "value" and "group" not in r:
@@ -608,15 +636,46 @@ def main() -> None:
                 .drop_duplicates()
                 .sort_values(active_group_cols)
             )
-            group_values = [tuple(row[col] for col in active_group_cols) for _, row in group_df.iterrows()]
+            group_values = [
+                normalize_group_key(tuple(row[col] for col in active_group_cols))
+                for _, row in group_df.iterrows()
+            ]
         else:
             group_values = []
-        group_options = [None] + group_values if group_values else [None]
+
+        group_catalog = [{"key": None, "label": "All data"}]
+        for key in group_values:
+            group_catalog.append({"key": key, "label": format_group_label(key)})
+        scope_label_map = {entry["key"]: entry["label"] for entry in group_catalog}
 
         def format_group_option(opt):
             if opt is None:
                 return "All data"
             return format_group_label(opt)
+
+        def pick_scope(label: str, key_prefix: str):
+            if len(group_catalog) == 1:
+                return None
+            query = st.text_input(
+                f"Search {label.lower()}",
+                key=f"{key_prefix}_scope_search",
+                placeholder="Type to filter…",
+            )
+            query_norm = (query or "").strip().lower()
+            filtered = [
+                entry for entry in group_catalog
+                if not query_norm or query_norm in entry["label"].lower()
+            ]
+            if not filtered:
+                st.info("No matching scopes. Showing all options.")
+                filtered = group_catalog
+            options = [entry["key"] for entry in filtered]
+            return st.selectbox(
+                label,
+                options,
+                format_func=lambda opt_key: scope_label_map[opt_key],
+                key=f"{key_prefix}_scope_select",
+            )
 
         def describe_value_target(col: str, group_key):
             if not active_group_cols:
@@ -626,88 +685,152 @@ def main() -> None:
         def describe_series_side(side: Dict[str, Union[str, tuple, None]]):
             return describe_value_target(side.get("col"), side.get("group"))
 
-        if st.session_state.rules:
-            st.markdown("#### Existing rules")
-            for i, r in enumerate(st.session_state.rules):
-                scope = f" ({r['start']}→{r['end']})" if r.get("start") else ""
-                if r["type"] == "value":
-                    desc = f"{describe_value_target(r['col'], r.get('group'))} {r['op']} {r['val']}"
-                else:
-                    desc = f"{describe_series_side(r['left'])} {r['op']} {describe_series_side(r['right'])}"
-                st.write(f"**{i}**: {desc}{scope}")
-            remove = st.multiselect("Remove rules", list(range(len(st.session_state.rules))))
-            if st.button("Delete selected") and remove:
-                for i in sorted(remove, reverse=True):
-                    st.session_state.rules.pop(i)
-                st.success("Rules removed.")
-        else:
-            st.info("No rules yet.")
+        def describe_rule(rule: Dict[str, Union[str, float, dict]]) -> str:
+            if rule["type"] == "value":
+                return f"{describe_value_target(rule['col'], rule.get('group'))} {rule['op']} {rule['val']}"
+            return f"{describe_series_side(rule['left'])} {rule['op']} {describe_series_side(rule['right'])}"
 
-        with st.form("add_rule"):
-            rtype = st.radio("Rule type", ["Value vs constant", "Series comparison"])
-            scoped  = st.checkbox("Restrict to date range?")
+        def describe_scope(rule: Dict[str, Union[str, dict]]) -> str:
+            if rule.get("start"):
+                start = pd.to_datetime(rule["start"]).date()
+                end = pd.to_datetime(rule["end"]).date()
+                return f"{start} → {end}"
+            return "Full range"
+
+        feedback = st.session_state.pop("rule_feedback", None)
+        if feedback:
+            level, message = feedback
+            getattr(st, level)(message)
+
+        manage_tab, add_tab = st.tabs(["Manage rules", "Add rule"])
+
+        with manage_tab:
+            if st.session_state.rules:
+                summary_rows = [
+                    {
+                        "ID": idx,
+                        "Condition": describe_rule(rule),
+                        "Scope": describe_scope(rule),
+                    }
+                    for idx, rule in enumerate(st.session_state.rules)
+                ]
+                rule_labels = {row["ID"]: row["Condition"] for row in summary_rows}
+                selected_ids = st.multiselect(
+                    "Choose rules to delete",
+                    options=[row["ID"] for row in summary_rows],
+                    format_func=lambda i: f"{i} – {rule_labels[i]}",
+                    key="rule_delete_select",
+                )
+                delete = st.button("Delete selected", type="primary")
+                if delete:
+                    if selected_ids:
+                        for idx in sorted(selected_ids, reverse=True):
+                            st.session_state.rules.pop(idx)
+                        st.session_state["rule_delete_select"] = []
+                        st.session_state["rule_feedback"] = ("success", "Selected rules removed.")
+                        trigger_rerun()
+                    else:
+                        st.session_state["rule_feedback"] = ("warning", "Please choose at least one rule to delete.")
+                        trigger_rerun()
+
+                updated_rows = [
+                    {
+                        "ID": idx,
+                        "Condition": describe_rule(rule),
+                        "Scope": describe_scope(rule),
+                    }
+                    for idx, rule in enumerate(st.session_state.rules)
+                ]
+                rules_df = pd.DataFrame(updated_rows)
+                st.markdown("#### Active rules")
+                st.dataframe(rules_df, use_container_width=True)
+            else:
+                st.info("No rules yet. Use the **Add rule** tab to create one.")
+
+        with add_tab:
+            st.markdown("#### Create a new rule")
+            rtype = st.radio(
+                "Rule type",
+                ["Value vs constant", "Series comparison"],
+                horizontal=True,
+                key="rule_type_choice",
+            )
+            scoped = st.checkbox("Restrict to date range?", key="rule_scope_dates")
             start = end = None
             if scoped:
-                start = st.date_input("Start", value=clean["date"].min().date())
-                end   = st.date_input("End", value=clean["date"].max().date(), min_value=start)
+                min_date = clean["date"].min().date()
+                max_date = clean["date"].max().date()
+                start = st.date_input(
+                    "Start",
+                    value=min_date,
+                    min_value=min_date,
+                    max_value=max_date,
+                    key="rule_start_date",
+                )
+                end = st.date_input(
+                    "End",
+                    value=max_date,
+                    min_value=start,
+                    max_value=max_date,
+                    key="rule_end_date",
+                )
 
-            target_group = None
             if rtype == "Value vs constant":
-                new_col = st.selectbox("Column", num_cols, key="val_col")
-                new_op  = st.selectbox("Operator", ["<=", ">=", "<", ">", "==", "!="], key="val_op")
-                new_val = st.number_input("Value", value=0.0, key="val_val")
+                new_col = st.selectbox("Column", num_cols, key="rule_value_column")
+                new_op = st.selectbox(
+                    "Operator",
+                    ["<=", ">=", "<", ">", "==", "!="],
+                    key="rule_value_operator",
+                )
+                new_val = st.number_input("Threshold value", value=0.0, key="rule_value_threshold")
                 if active_group_cols:
-                    target_group = st.selectbox(
-                        "Series (by group)",
-                        group_options,
-                        index=0,
-                        format_func=format_group_option,
-                        key="val_group",
-                    )
+                    target_group = pick_scope("Series scope", "value")
+                else:
+                    target_group = None
+                preview_rule = {
+                    "type": "value",
+                    "col": new_col,
+                    "op": new_op,
+                    "val": new_val,
+                    "group": target_group,
+                    "start": start,
+                    "end": end,
+                }
             else:
-                left_col = st.selectbox("Left series column", num_cols, key="left_series")
-                right_col = st.selectbox("Right series column", num_cols, key="right_series")
-                new_op = st.selectbox("Operator", ["<=", ">=", "<", ">", "==", "!="], key="series_op")
+                left_col = st.selectbox("Left series column", num_cols, key="rule_left_column")
+                right_col = st.selectbox(
+                    "Right series column",
+                    num_cols,
+                    index=min(1, len(num_cols) - 1),
+                    key="rule_right_column",
+                )
+                new_op = st.selectbox(
+                    "Operator",
+                    ["<=", ">=", "<", ">", "==", "!="],
+                    index=1,
+                    key="rule_series_operator",
+                )
                 if active_group_cols:
-                    default_index = 1 if len(group_options) > 1 else 0
-                    left_group = st.selectbox(
-                        "Left series group",
-                        group_options,
-                        index=default_index,
-                        format_func=format_group_option,
-                        key="left_group",
-                    )
-                    right_group = st.selectbox(
-                        "Right series group",
-                        group_options,
-                        index=default_index,
-                        format_func=format_group_option,
-                        key="right_group",
-                    )
+                    left_group = pick_scope("Left series scope", "left")
+                    right_group = pick_scope("Right series scope", "right")
                 else:
                     left_group = right_group = None
+                preview_rule = {
+                    "type": "series",
+                    "left": {"col": left_col, "group": left_group},
+                    "right": {"col": right_col, "group": right_group},
+                    "op": new_op,
+                    "start": start,
+                    "end": end,
+                }
 
-            if st.form_submit_button("Add"):
-                if rtype == "Value vs constant":
-                    st.session_state.rules.append({
-                        "type": "value",
-                        "col": new_col,
-                        "op": new_op,
-                        "val": new_val,
-                        "group": target_group if active_group_cols else None,
-                        "start": start,
-                        "end": end,
-                    })
-                else:
-                    st.session_state.rules.append({
-                        "type": "series",
-                        "left": {"col": left_col, "group": left_group if active_group_cols else None},
-                        "right": {"col": right_col, "group": right_group if active_group_cols else None},
-                        "op": new_op,
-                        "start": start,
-                        "end": end,
-                    })
-                st.success("Rule added.")
+            st.markdown(f"**Preview:** {describe_rule(preview_rule)}  ")
+            st.caption(f"Scope: {describe_scope(preview_rule)}")
+
+            if st.button("Add rule", type="primary", key="rule_add_button"):
+                st.session_state.rules.append(preview_rule)
+                st.session_state["rule_feedback"] = ("success", "Rule added.")
+                trigger_rerun()
 
         if st.session_state.rules:
             op_funcs = {
@@ -746,8 +869,16 @@ def main() -> None:
                     bad["Series"] = describe_value_target(r["col"], r.get("group"))
                     viol_list.append(bad)
                 else:
-                    left_series = extract_series(df_range, r["left"]["col"], r["left"].get("group")).rename(columns={"value": "left_value"})
-                    right_series = extract_series(df_range, r["right"]["col"], r["right"].get("group")).rename(columns={"value": "right_value"})
+                    left_series = extract_series(
+                        df_range,
+                        r["left"]["col"],
+                        r["left"].get("group"),
+                    ).rename(columns={"value": "left_value"})
+                    right_series = extract_series(
+                        df_range,
+                        r["right"]["col"],
+                        r["right"].get("group"),
+                    ).rename(columns={"value": "right_value"})
                     merged = pd.merge(left_series, right_series, on="date", how="inner")
                     if merged.empty:
                         continue
@@ -797,8 +928,16 @@ def main() -> None:
                         viol_values = df_vis.set_index("date")[rule["col"]].reindex(violations["date"])
                         ax.scatter(violations["date"], viol_values, color="red", label="Violation")
                 else:
-                    left_plot = extract_series(df_vis, rule["left"]["col"], rule["left"].get("group")).rename(columns={"value": "left_value"})
-                    right_plot = extract_series(df_vis, rule["right"]["col"], rule["right"].get("group")).rename(columns={"value": "right_value"})
+                    left_plot = extract_series(
+                        df_vis,
+                        rule["left"]["col"],
+                        rule["left"].get("group"),
+                    ).rename(columns={"value": "left_value"})
+                    right_plot = extract_series(
+                        df_vis,
+                        rule["right"]["col"],
+                        rule["right"].get("group"),
+                    ).rename(columns={"value": "right_value"})
                     plot_df = pd.merge(left_plot, right_plot, on="date", how="outer").sort_values("date")
                     ax.plot(plot_df["date"], plot_df["left_value"], label=describe_series_side(rule["left"]))
                     ax.plot(plot_df["date"], plot_df["right_value"], label=describe_series_side(rule["right"]))
@@ -819,4 +958,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
