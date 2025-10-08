@@ -1,0 +1,146 @@
+\documentclass[aspectratio=169]{beamer}
+
+\usetheme{metropolis}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{amsmath}
+
+\title{Introducing the Time-Series Data Validation Tool}
+\subtitle{30-Minute Enablement Session}
+\author{Data Quality Team}
+\date{\\[0.5ex]Prepared for internal training}
+
+\begin{document}
+
+\begin{frame}[plain]
+  \titlepage
+\end{frame}
+
+\begin{frame}{Session Roadmap}
+  \begin{columns}[T]
+    \column{0.55\textwidth}
+      \begin{enumerate}
+        \item Context and motivation (5 min)
+        \item Live tour of the Streamlit app (15 min)
+        \item Extending the rules engine (5 min)
+        \item Q\&A and next steps (5 min)
+      \end{enumerate}
+    \column{0.45\textwidth}
+      \begin{block}{Learning Goals}
+        \begin{itemize}
+          \item Understand what problems the tool solves.
+          \item Learn the workflow from raw upload to export.
+          \item Know where to tweak configuration and validation rules.
+        \end{itemize}
+      \end{block}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Why We Built This Tool}
+  \begin{itemize}
+    \item Weekly intake of spreadsheets from multiple sources with inconsistent schemas.
+    \item Manual header mapping and reshaping took hours and was error-prone.
+    \item Audit trail and repeatability requirements from governance teams.
+    \item Need for shared diagnostic dashboards to review anomalies quickly.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Architecture Overview}
+  \begin{columns}[T]
+    \column{0.5\textwidth}
+      \textbf{Frontend}
+      \begin{itemize}
+        \item Streamlit app with AgGrid for interactive tables.
+        \item Cached file ingestion for rapid iteration.
+        \item Inline plots and logs for anomaly review.
+      \end{itemize}
+    \column{0.5\textwidth}
+      \textbf{Backend Logic}
+      \begin{itemize}
+        \item Pandas for data wrangling and reshaping.
+        \item Statsmodels STL for seasonal decomposition checks.
+        \item Custom synonym dictionaries and validation plans.
+      \end{itemize}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Demo Agenda (15 min)}
+  \begin{enumerate}
+    \item Upload a messy wide-format file.
+    \item Inspect detected header row and rename suggestions.
+    \item Accept or adjust mappings via AgGrid controls.
+    \item Run auto wide-to-long reshaping.
+    \item Review validation results and plots.
+    \item Export cleaned dataset and logs.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{Key Concepts}
+  \begin{description}
+    \item[Canonical Columns] Mandatory fields such as \texttt{date} and indicator names.
+    \item[Synonyms] Lowercased map of known aliases and typos for auto-matching.
+    \item[Plan] Dataclass describing header row index and rename operations.
+    \item[Validation Rules] Gap, outlier, and structural-break checks plus custom numeric constraints.
+  \end{description}
+\end{frame}
+
+\begin{frame}{Extending Synonyms (5 min)}
+  \begin{block}{Workflow}
+    \begin{enumerate}
+      \item Update the \texttt{SYN} dictionary with new aliases.
+      \item Regenerate the lowercase map (\texttt{SYN\_LC}).
+      \item Validate in dev: upload a file containing the new labels.
+      \item Submit a PR with tests/data notes.
+    \end{enumerate}
+  \end{block}
+  \begin{alertblock}{Tip}
+    Keep canonical names stable; downstream reports rely on them.
+  \end{alertblock}
+\end{frame}
+
+\begin{frame}{Adding Custom Checks}
+  \begin{itemize}
+    \item Build functions that accept tidy dataframes and return diagnostics.
+    \item Register them in the validation pipeline after the standard checks.
+    \item Surface results in Streamlit via expandable sections and plots.
+    \item Document the business rules in the README for wider adoption.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Collaboration and Support}
+  \begin{columns}[T]
+    \column{0.6\textwidth}
+      \begin{itemize}
+        \item Version control via GitHub pull requests.
+        \item Shared sample datasets in the team drive for regression testing.
+        \item Release notes maintained in the repository wiki.
+      \end{itemize}
+    \column{0.4\textwidth}
+      \begin{block}{Resources}
+        \begin{itemize}
+          \item Repo README and inline docstrings.
+          \item Dedicated Slack channel \#data-validation.
+          \item Monthly office hours with the data quality guild.
+        \end{itemize}
+      \end{block}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Next Steps \& Q\&A (5 min)}
+  \begin{itemize}
+    \item Schedule pilot projects with two analyst pods.
+    \item Collect feedback via shared Confluence page.
+    \item Plan roadmap items: batch automation, role-based access.
+    \item Open floor for questions.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[plain]
+  \centering
+  \Huge{Thank You!}
+  \\[1ex]
+  \large{Contact: data-quality@example.com}
+\end{frame}
+
+\end{document}
